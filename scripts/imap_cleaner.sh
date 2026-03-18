@@ -32,7 +32,7 @@ for i in {1..24}; do
 done
 
 # 2) Read IMAP host/port from .env without sourcing (safe with spaces)
-getenv () { grep -E "^[[:space:]]*$1=" "$ENV_FILE" | tail -n1 | cut -d'=' -f2- | sed 's/^[[:space:]]*//'; }
+getenv () { grep -E "^[[:space:]]*$1=" "$ENV_FILE" | tail -n1 | cut -d'=' -f2- | sed "s/^[[:space:]]*//; s/^[\"']//; s/[\"']$//"; }
 IMAP_HOST="$(getenv IMAP_HOST)"; [[ -z "$IMAP_HOST" ]] && IMAP_HOST="$(getenv IMAP_SERVER)"
 IMAP_PORT="$(getenv IMAP_PORT)"; [[ -z "$IMAP_PORT" ]] && IMAP_PORT="993"
 [[ -z "$IMAP_HOST" ]] && IMAP_HOST="imap.mail.me.com"
@@ -58,15 +58,15 @@ for i in {1..18}; do
 done
 
 # 4) Run Docker directly
-ARGS='--mark-read --delete --mailboxes "INBOX,Junk"'
-echo "[$(date)] Launching container with args: $ARGS" | tee -a "$LOG"
+# TODO: Build a custom Docker image with pre-installed deps to avoid pip install on every run
+echo "[$(date)] Launching container..." | tee -a "$LOG"
 docker run --rm \
   --env-file "$ENV_FILE" \
   -v "$PROJECT":/work:ro \
   -v "$LOGDIR":/work/logs:rw \
   -w /work \
-  python:3.12-alpine \
-  sh -lc 'pip install --no-cache-dir -q --disable-pip-version-check --root-user-action=ignore python-dotenv==1.1.0 requests==2.32.3 && python imap_cleanup.py '"$ARGS" 2>&1 | tee -a "$LOG"
+  python:3.12.8-alpine3.21 \
+  sh -c 'pip install --no-cache-dir -q --disable-pip-version-check --root-user-action=ignore python-dotenv==1.1.0 requests==2.32.3 && python imap_cleanup.py --mark-read --delete --mailboxes "INBOX,Junk"' 2>&1 | tee -a "$LOG"
 st=${PIPESTATUS[0]}
 
 echo "[$(date)] Finished with exit code: $st" | tee -a "$LOG"

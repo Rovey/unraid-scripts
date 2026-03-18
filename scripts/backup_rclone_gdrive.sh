@@ -41,6 +41,8 @@ LOW_LEVEL_RETRIES=10
 LOG_DIR="/mnt/user/backups/appdata/rclone-logs"
 LOG_KEEP=30
 mkdir -p "$LOG_DIR"
+exec 9>"$LOG_DIR/.lock"
+flock -n 9 || { echo "[WARN] Already running"; exit 0; }
 LOG_FILE="$LOG_DIR/rclone-gdrive-$(date +%F-%H%M%S).log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 ls -1t "$LOG_DIR"/rclone-gdrive-*.log 2>/dev/null | tail -n +$((LOG_KEEP+1)) | xargs -r rm -f --
@@ -59,7 +61,7 @@ remote_used_mib () {
   local bytes out i
   out=$(rclone size "$REMOTE" --json 2>/dev/null || true)
   if [[ -n "$out" ]]; then
-    bytes=$(echo "$out" | sed -n 's/.*"bytes":[ ]*\([0-9]\+\).*/\1/p' | head -n1 || true)
+    bytes=$(echo "$out" | tr -d '[:space:]' | grep -o '"bytes":[0-9]*' | head -n1 | grep -o '[0-9]*' || true)
     if [[ -n "${bytes:-}" ]]; then
       echo $(( (bytes + 1024*1024 - 1) / (1024*1024) ))
       return 0
@@ -83,7 +85,8 @@ remote_used_mib () {
     if [[ -n "${out:-}" ]]; then echo "$out"; return 0; fi
     sleep 1
   done
-  echo 0
+  echo "[WARN] Failed to determine remote size after all retries" >&2
+  echo -1
 }
 
 count_ab () { rclone lsf "$REMOTE" --dirs-only 2>/dev/null | grep -E '^ab_' | wc -l || true; }
@@ -97,7 +100,11 @@ prune_remote_to_target () {
 
   local used abn flashn item
   while :; do
-    used=$(remote_used_mib); used=${used:-0}
+    used=$(remote_used_mib)
+    if (( used < 0 )); then
+      echo "[WARN] Cannot determine remote size during pruning. Stopping."
+      break
+    fi
     if (( used <= target_mib )); then
       echo "[INFO] Under target. (used ${used} MiB)"
       break
@@ -127,8 +134,12 @@ prune_remote_to_target () {
     break
   done
 
-  used=$(remote_used_mib); used=${used:-0}
-  echo "[INFO] Prune pass finished. Remote used: ${used} MiB"
+  used=$(remote_used_mib)
+  if (( used >= 0 )); then
+    echo "[INFO] Prune pass finished. Remote used: ${used} MiB"
+  else
+    echo "[WARN] Prune pass finished. Could not determine final remote usage."
+  fi
 }
 
 # =========================
@@ -139,7 +150,11 @@ prune_remote_to_target () {
 rclone mkdir "$REMOTE" >/dev/null 2>&1 || true
 rclone mkdir "$REMOTE/flash-config" >/dev/null 2>&1 || true
 
-used_before=$(remote_used_mib); used_before=${used_before:-0}
+used_before=$(remote_used_mib)
+if (( used_before < 0 )); then
+  echo "[ERROR] Cannot determine remote size. Aborting."
+  exit 1
+fi
 echo "[INFO] Remote used before any action: ${used_before} MiB"
 
 # If already at/over HARD cap, prune to SOFT cap first so we can upload safely
@@ -150,7 +165,11 @@ else
   echo "[INFO] Remote is under HARD cap. No mandatory pre-prune."
 fi
 
-used_now=$(remote_used_mib); used_now=${used_now:-0}
+used_now=$(remote_used_mib)
+if (( used_now < 0 )); then
+  echo "[ERROR] Cannot determine remote size before upload. Aborting."
+  exit 1
+fi
 echo "[INFO] Remote used before upload: ${used_now} MiB"
 
 # Build upload budget to ensure we never exceed HARD cap
@@ -180,18 +199,13 @@ AB_TO_UPLOAD=()
 for ab in "${AB_ALL[@]}"; do
   ab_mib=$(du -sm "$ab" | awk '{print $1}' || echo 0)
 
-  # After we have at least MIN_UPLOAD_AB, enforce budget strictly
-  if (( ${#AB_TO_UPLOAD[@]} >= MIN_UPLOAD_AB )); then
-    if (( ab_mib > budget_mib )); then
-      continue
-    fi
+  if (( ab_mib > budget_mib )); then
+    echo "[WARN] Skipping $ab (${ab_mib} MiB) — exceeds remaining budget (${budget_mib} MiB)"
+    continue
   fi
 
   AB_TO_UPLOAD+=( "$ab" )
-
-  if (( ab_mib <= budget_mib )); then
-    budget_mib=$(( budget_mib - ab_mib ))
-  fi
+  budget_mib=$(( budget_mib - ab_mib ))
 
   if (( ${#AB_TO_UPLOAD[@]} >= MAX_UPLOAD_AB )); then
     break
@@ -225,7 +239,11 @@ else
 fi
 
 # Post-check and prune if needed
-used_after=$(remote_used_mib); used_after=${used_after:-0}
+used_after=$(remote_used_mib)
+if (( used_after < 0 )); then
+  echo "[WARN] Cannot determine remote size after upload — skipping post-upload pruning"
+  used_after=0
+fi
 echo "[INFO] Remote used after upload: ${used_after} MiB"
 
 if (( used_after > HARD_CAP_MIB )); then
@@ -240,6 +258,10 @@ else
   # prune_remote_to_target "$FINAL_CAP_MIB"
 fi
 
-final_used=$(remote_used_mib); final_used=${final_used:-0}
-echo "[INFO] Done. Final remote used: ${final_used} MiB"
+final_used=$(remote_used_mib)
+if (( final_used >= 0 )); then
+  echo "[INFO] Done. Final remote used: ${final_used} MiB"
+else
+  echo "[WARN] Done. Could not determine final remote usage."
+fi
 echo "[INFO] ===== RCLONE GDRIVE BACKUP END $(date '+%Y-%m-%d %H:%M:%S') ====="

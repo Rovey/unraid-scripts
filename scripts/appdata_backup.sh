@@ -12,19 +12,16 @@ KEEP_MONTHS=12       # Keep 1 per month for last N months
 echo "[INFO] Flash-config backup started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "[INFO] Destination: $DST"
 
-mkdir -p "$DST"
-if [[ ! -d "$DST" ]]; then
-  echo "[ERROR] DST does not exist: $DST"
-  exit 1
-fi
+mkdir -p "$DST" || { echo "[ERROR] Cannot create $DST"; exit 1; }
+exec 9>"$DST/.lock"
+flock -n 9 || { echo "[WARN] Already running"; exit 0; }
 
 shopt -s nullglob
 
 # --- Create backup ---
-OUT="$DST/flash-config-$(date +%F-%H%M).zip"
+OUT="$DST/flash-config-$(date +%F-%H%M%S).zip"
 echo "[INFO] Creating flash-config backup: $OUT"
-cd /boot
-zip -qr "$OUT" config
+(cd /boot && zip -qr "$OUT" config)
 unzip -t "$OUT" >/dev/null 2>&1 || { echo "[ERROR] Corrupt backup: $OUT"; rm -f "$OUT"; exit 1; }
 echo "[INFO] Backup created: $(ls -lh "$OUT" | awk '{print $5, $9}')"
 
@@ -39,7 +36,7 @@ pick_newest () {
   ls -1t -- "$@" 2>/dev/null | head -n 1 || true
 }
 
-# Backups are named like: flash-config-YYYY-MM-DD-HHMM.zip
+# Backups are named like: flash-config-YYYY-MM-DD-HHMMSS.zip
 extract_date () {
   local base="$1"
   local d="${base#flash-config-}"
@@ -48,7 +45,7 @@ extract_date () {
 }
 
 # Collect all backups (sorted newest first)
-all=( "$DST"/flash-config-????-??-??-????.zip )
+all=( "$DST"/flash-config-????-??-??-*.zip )
 
 if (( ${#all[@]} == 0 )); then
   echo "[INFO] No flash-config backups found."
@@ -56,7 +53,7 @@ if (( ${#all[@]} == 0 )); then
 fi
 
 # 1) Always keep newest N
-mapfile -t newestN < <(ls -1t "$DST"/flash-config-????-??-??-????.zip 2>/dev/null | head -n "$KEEP_LAST" || true)
+mapfile -t newestN < <(ls -1t "$DST"/flash-config-????-??-??-*.zip 2>/dev/null | head -n "$KEEP_LAST" || true)
 if (( ${#newestN[@]} )); then
   printf "%s\n" "${newestN[@]}" >> "$KEEP_LIST"
 fi
@@ -102,6 +99,10 @@ done
 sort -u "$KEEP_LIST" -o "$KEEP_LIST"
 
 # Delete everything not in keep list
+if [[ ! -s "$KEEP_LIST" ]]; then
+  echo "[ERROR] Keep list is empty — aborting cleanup to protect backups"
+  exit 1
+fi
 to_delete=$(grep -vxFf "$KEEP_LIST" < <(printf "%s\n" "${all[@]}") || true)
 if [[ -n "$to_delete" ]]; then
   echo "[INFO] Deleting:"
