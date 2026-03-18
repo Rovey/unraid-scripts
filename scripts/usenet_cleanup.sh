@@ -18,6 +18,8 @@ LOG_TAG="UsenetCleanup"
 DELETED_COUNT=0
 DRY_RUN="${1:-0}"   # Pass 1 as argument for dry-run mode
 
+log () { echo "[$(date '+%H:%M:%S')] $1"; logger -t "$LOG_TAG" "$1"; }
+
 # ==============================
 # Cleanup Function
 # ==============================
@@ -27,7 +29,7 @@ cleanup_path () {
     local DAYS_OLD="$2"
 
     if [ ! -d "$TARGET_PATH" ]; then
-        logger -t "$LOG_TAG" "Path $TARGET_PATH does not exist. Skipping."
+        log "Path $TARGET_PATH does not exist. Skipping."
         return
     fi
 
@@ -39,7 +41,7 @@ cleanup_path () {
         found=1
         # Skip symlinks — prevent traversal outside target
         if [ -L "$DIR" ]; then
-            logger -t "$LOG_TAG" "SKIP (symlink): $DIR"
+            log "SKIP (symlink): $DIR"
             continue
         fi
         # Verify realpath stays inside target
@@ -47,23 +49,23 @@ cleanup_path () {
         realdir=$(realpath -- "$DIR" 2>/dev/null) || continue
         case "$realdir" in
             "$TARGET_PATH"/*) ;;
-            *) logger -t "$LOG_TAG" "SKIP (outside target): $DIR"; continue ;;
+            *) log "SKIP (outside target): $DIR"; continue ;;
         esac
 
         if [ "$DRY_RUN" -eq 1 ]; then
-            logger -t "$LOG_TAG" "[DRY RUN] Would delete: $DIR"
+            log "[DRY RUN] Would delete: $DIR"
         else
-            logger -t "$LOG_TAG" "Deleting: $DIR"
-            rm -rf -- "$DIR" || logger -t "$LOG_TAG" "ERROR: Failed to remove $DIR"
+            log "Deleting: $DIR"
+            rm -rf -- "$DIR" || log "ERROR: Failed to remove $DIR"
             : $(( DELETED_COUNT++ ))
         fi
     done < <(find "$TARGET_PATH" -mindepth 1 -maxdepth 1 -type d -not -type l -mtime +"$DAYS_OLD" -print0)
 
     if [ "$found" -eq 0 ]; then
-        logger -t "$LOG_TAG" "No directories older than $DAYS_OLD days in $TARGET_PATH."
+        log "No directories older than $DAYS_OLD days in $TARGET_PATH."
     fi
 
-    logger -t "$LOG_TAG" "Cleanup complete for $TARGET_PATH."
+    log "Cleanup complete for $TARGET_PATH."
 }
 
 # ==============================
@@ -74,4 +76,4 @@ cleanup_path "$INCOMPLETE_PATH" "$DAYS_INCOMPLETE"
 cleanup_path "$MOVIES_PATH" "$DAYS_COMPLETE"
 cleanup_path "$TV_PATH" "$DAYS_COMPLETE"
 
-logger -t "$LOG_TAG" "Full cleanup run completed. $DELETED_COUNT directories removed."
+log "Full cleanup run completed. $DELETED_COUNT directories removed."
